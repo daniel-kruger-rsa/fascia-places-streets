@@ -1,0 +1,7 @@
+{
+  "name": "fascia-places-streets",
+  "private": true,
+  "dependencies": {
+    "pg": "^8.13.1"
+  }
+}
