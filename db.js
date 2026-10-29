@@ -19,4 +19,14 @@ async function connect(databaseUrl, attempts = 20, delayMs = 1500) {
   throw lastErr;
 }
 
-module.exports = { connect };
+// buildings is partitioned by country: each country's ingest makes its own partition, so a
+// second country is loaded without touching the first.
+async function ensureCountryPartition(client, country) {
+  const code = String(country || "").toUpperCase();
+  if (!/^[A-Z]{2}$/.test(code)) throw new Error("country must be a two-letter code: " + country);
+  await client.query(
+    `CREATE TABLE IF NOT EXISTS buildings_${code.toLowerCase()} PARTITION OF buildings FOR VALUES IN ('${code}')`,
+  );
+}
+
+module.exports = { connect, ensureCountryPartition };

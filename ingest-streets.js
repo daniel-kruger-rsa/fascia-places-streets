@@ -10,6 +10,8 @@
 // osmium-tool filters and exports the extract (GDAL was rejected for host DNS; do not reintroduce).
 // OSM changes daily and Geofabrik's "latest" moves, so the pbf's sha256 and OSM replication
 // timestamp go into pack_meta. Pin a dated extract with STREETS_PBF_URL to reproduce a pack.
+// The method is published (ODbL 4.6) at github.com/daniel-kruger-rsa/fascia-places-streets:
+// republish this file and street-name.js there whenever either changes.
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
@@ -20,6 +22,8 @@ const { recordSource } = require("./pack-meta");
 const { normaliseStreetName } = require("./street-name");
 
 const generation = process.env.PACK_GENERATION || "mdb-zaf-2020";
+// A generation belongs to a country; this source covers one.
+const country = (process.env.PACK_COUNTRY || "ZA").toUpperCase();
 const cacheDir = process.env.PACK_CACHE || "/packs/cache";
 const PBF_URL = process.env.STREETS_PBF_URL || "https://download.geofabrik.de/africa/south-africa-latest.osm.pbf";
 
@@ -31,6 +35,12 @@ const HIGHWAYS = [
   "motorway_link", "trunk_link", "primary_link", "secondary_link", "tertiary_link",
   "unclassified", "residential", "living_street", "pedestrian", "road", "service", "track",
 ];
+
+// Unnamed ways are kept too. They never become streets rows, but their length feeds
+// area_stats.road_km, the denominator a host needs where OSM has the road and not its name:
+// Gauteng has named streets in 96% of sub-places, the Eastern Cape in 12%. Set
+// STREETS_ROAD_STATS=0 to skip them and clip only named ways, which is several times faster.
+const ROAD_STATS = process.env.STREETS_ROAD_STATS !== "0";
 
 // A street that crosses an SP boundary by less than this (census 2011 lines vs OSM) is not
 // listed in that SP — unless the stub is all there is of it.
@@ -84,10 +94,11 @@ async function loadWays(client, seqPath) {
     const f = JSON.parse(line);
     const p = f.properties || {};
     const name = String(p.name || "").trim();
-    const norm = name && normaliseStreetName(name);
+    const norm = name ? normaliseStreetName(name) : "";
     const osmId = Number(String(f.id || "").replace(/^w/, ""));
-    if (!norm || !HIGHWAYS.includes(p.highway) || !Number.isFinite(osmId) || f.geometry?.type !== "LineString") continue;
-    batch.push({ osm_id: osmId, name, norm, highway: p.highway, geom: JSON.stringify(f.geometry) });
+    if (!HIGHWAYS.includes(p.highway) || !Number.isFinite(osmId) || f.geometry?.type !== "LineString") continue;
+    if (!norm && !ROAD_STATS) continue;
+    batch.push({ osm_id: osmId, name: name || null, norm: norm || null, highway: p.highway, geom: JSON.stringify(f.geometry) });
     kept += 1;
     if (batch.length === BATCH) {
       await insertBatch(client, batch);
@@ -140,16 +151,24 @@ async function main() {
   await client.query("CREATE INDEX ON sp_parts USING GIST (geom)");
   await client.query("ANALYZE sp_parts");
 
-  console.log("clip and merge");
+  console.log("clip" + (ROAD_STATS ? " (named and unnamed ways)" : " (named ways only)"));
+  await client.query(
+    `CREATE TEMP TABLE clipped AS
+     SELECT p.area_id, p.sp_code, r.osm_id, r.name, r.norm_name, r.highway,
+            CASE WHEN ST_CoveredBy(r.geom, p.geom) THEN r.geom
+                 ELSE ST_CollectionExtract(ST_Intersection(r.geom, p.geom), 2) END AS geom
+     FROM streets_src r
+     JOIN sp_parts p ON ST_Intersects(r.geom, p.geom)`,
+  );
+  await client.query("DELETE FROM clipped WHERE geom IS NULL OR ST_IsEmpty(geom)");
+
+  console.log("merge");
   await client.query("BEGIN");
   await client.query("DELETE FROM streets WHERE generation = $1", [generation]);
   const inserted = await client.query(
     `WITH pieces AS (
-       SELECT p.area_id, p.sp_code, r.osm_id, r.name, r.norm_name, r.highway,
-              CASE WHEN ST_CoveredBy(r.geom, p.geom) THEN r.geom
-                   ELSE ST_CollectionExtract(ST_Intersection(r.geom, p.geom), 2) END AS geom
-       FROM streets_src r
-       JOIN sp_parts p ON ST_Intersects(r.geom, p.geom)
+       SELECT area_id, sp_code, osm_id, name, norm_name, highway, geom
+       FROM clipped WHERE norm_name IS NOT NULL
      ), merged AS (
        SELECT area_id, sp_code, norm_name,
               mode() WITHIN GROUP (ORDER BY name) AS name,
@@ -167,6 +186,21 @@ async function main() {
      WHERE NOT ST_IsEmpty(geom)`,
     [generation, HIGHWAYS],
   );
+  const roadStats = ROAD_STATS
+    ? await client.query(
+        `INSERT INTO area_stats (area_id, generation, road_km, named_road_km, updated_at)
+         SELECT area_id, $1,
+                sum(m) / 1000.0,
+                sum(m) FILTER (WHERE norm_name IS NOT NULL) / 1000.0,
+                now()
+         FROM (SELECT area_id, norm_name, ST_Length(geom::geography) AS m FROM clipped) t
+         GROUP BY area_id
+         ON CONFLICT (area_id, generation) DO UPDATE
+           SET road_km = EXCLUDED.road_km, named_road_km = EXCLUDED.named_road_km, updated_at = now()`,
+        [generation],
+      )
+    : { rowCount: 0 };
+
   const pruned = await client.query(
     `DELETE FROM streets a
      WHERE a.generation = $1 AND a.length_m < $2
@@ -192,14 +226,15 @@ async function main() {
   );
   const counts = {
     ways_read: ways.read,
-    ways_named: ways.kept,
+    ways_kept: ways.kept,
+    road_stats_cells: roadStats.rowCount,
     ways_outside_sp: outside.rows[0].n,
     pieces_inserted: inserted.rowCount,
     stubs_pruned: pruned.rowCount,
     ...stats.rows[0],
   };
 
-  await recordSource(client, generation, "lines_streets", {
+  await recordSource(client, country, generation, "lines_streets", {
     source: PBF_URL,
     license: "ODbL 1.0",
     attribution: "© OpenStreetMap contributors",

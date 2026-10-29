@@ -1,6 +1,10 @@
 // Street-name normalisation. The normalised name groups OSM ways into one street per
 // sub-place and seeds the street_id, so changing these rules changes street ids: treat
-// a change here like a new generation. Search (later) must normalise queries the same way.
+// a change here like a new generation.
+//
+// This file exists twice, byte-identical: services/places-ingest (builds the names) and
+// services/places-api (normalises search queries the same way). CI compares them; edit both,
+// and republish the ingest copy to the public method repo (see packs/SOURCES.md).
 //
 // Rules, in order: strip diacritics, lowercase, punctuation to spaces, collapse spaces,
 // then expand a trailing street-type abbreviation ("Main Rd" and "Main Road" are one street).
