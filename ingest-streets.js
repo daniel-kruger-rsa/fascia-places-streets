@@ -20,6 +20,8 @@ const { execFileSync } = require("child_process");
 const { connect } = require("./db");
 const { recordSource } = require("./pack-meta");
 const { normaliseStreetName } = require("./street-name");
+const { vintagesFor } = require("./vintages");
+const { OSM_ODBL } = require("./attribution");
 
 const generation = process.env.PACK_GENERATION || "mdb-zaf-2020";
 // A generation belongs to a country; this source covers one.
@@ -234,13 +236,59 @@ async function main() {
     ...stats.rows[0],
   };
 
+  // The extract's replication timestamp is the vintage, and it was recorded only as a loose
+  // provenance key below -- so /v1/places/layers, the one endpoint that publishes vintages,
+  // showed the ST row with no vintage and no `current` while the pack held the date all along.
+  // Same defect as the LOC tier's, found the same day and fixed the same way: that endpoint
+  // reads `sources[<layer>].vintages[<adm>]`, so the fact has to be written in that shape too.
+  //
+  // No date is pinned in vintages.js for this layer and that is deliberate -- STREETS_PBF_URL
+  // defaults to Geofabrik's `latest`, which moves daily, so there is nothing to pin and nothing
+  // to cross-check against. The read timestamp is the only honest answer, and a pack built from
+  // an extract whose header carries none gets no vintage rather than an invented one.
+  const replication = replicationTimestamp(pbf);
+  const curatedSt = (vintagesFor(country, generation, "lines_streets") || {}).ST || null;
+  const streetVintage = replication && /^\d{4}-\d{2}-\d{2}/.test(replication)
+    ? replication.slice(0, 10)
+    : null;
+  // The curated copy pins which extract this generation may hold; this one was read out of the
+  // pbf header. Same arrangement as the locality tier, and for the same reason: one fact with
+  // two copies is this repo's recurring defect, so the second copy earns its keep by being a
+  // check. A re-ingest against a different extract stops here rather than moving a live layer's
+  // meaning while /v1/places/layers goes on reporting the old date.
+  if (curatedSt && curatedSt.vintage && streetVintage && curatedSt.vintage !== streetVintage) {
+    throw new Error(
+      `vintages.js pins ${country}/${generation} lines_streets to the ${curatedSt.vintage} `
+      + `extract and this one is ${streetVintage}. Either STREETS_PBF_URL points at the wrong `
+      + "extract or vintages.js has not been updated for a new one. Do not load a streets layer "
+      + "whose published vintage describes a different download.",
+    );
+  }
   await recordSource(client, country, generation, "lines_streets", {
+    ...(streetVintage
+      ? {
+        vintages: {
+          ST: {
+            vintage: streetVintage,
+            vintage_source: `read: osmosis_replication_timestamp in the header of ${path.basename(new URL(PBF_URL).pathname)}`,
+            superseded_by: curatedSt ? curatedSt.superseded_by || null : null,
+            superseded_from: curatedSt ? curatedSt.superseded_from || null : null,
+            supersession_note: curatedSt ? curatedSt.note || null : null,
+          },
+        },
+      }
+      : {}),
     source: PBF_URL,
-    license: "ODbL 1.0",
-    attribution: "© OpenStreetMap contributors",
+    // From the constant, not retyped. These two said "ODbL 1.0" and "© OpenStreetMap
+    // contributors" as literals while attribution.js spelt the licence
+    // "Open Database License (ODbL) 1.0" -- loose provenance rather than a served credit, so
+    // nothing broke, and still a copy that contradicted the credit beside it. A pack already in
+    // production keeps the old literal until streets are next ingested.
+    license: OSM_ODBL.license,
+    attribution: OSM_ODBL.text,
     pbf_sha256: await sha256(pbf),
     pbf_bytes: fs.statSync(pbf).size,
-    osm_replication_timestamp: replicationTimestamp(pbf),
+    osm_replication_timestamp: replication,
     highways: HIGHWAYS,
     min_piece_m: MIN_PIECE_M,
     counts,

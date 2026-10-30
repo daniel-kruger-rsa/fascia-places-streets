@@ -36,6 +36,7 @@ const { connect } = require("./db");
 const { recordSource } = require("./pack-meta");
 const { localityId, localitySeed } = require("./locality-id");
 const { OSM_ODBL } = require("./attribution");
+const { vintagesFor } = require("./vintages");
 
 const generation = process.env.PACK_GENERATION;
 const country = (process.env.PACK_COUNTRY || "IN").toUpperCase();
@@ -511,10 +512,52 @@ async function main() {
     console.log("marked as same-named as parent", marked);
 
     const checks = await verify(client, vintage);
+    // THE VINTAGE, IN THE SHAPE THE ONE READER OF IT ACTUALLY READS. This ingest has always
+    // recorded the extract date as a loose `vintage` key below, which is right for a person
+    // reading pack_meta and invisible to /v1/places/layers -- that endpoint reads
+    // `sources[<layer>].vintages[<adm>]`. So on 29 October 2026 South Africa served 9,215
+    // localities, every cell carrying `codes.vintage: 2026-10-19`, under a LOC layer row with
+    // no vintage and no `current`. The fact was in the pack, in a shape its only publisher
+    // could not see. Both are written now: the loose key for a reader, this for the endpoint.
+    //
+    // AND THE CURATED COPY IS CROSS-CHECKED RATHER THAN TRUSTED. vintages.js pins which extract
+    // a generation may be built from; the date above was read out of the pbf header. One fact
+    // with two copies is this repo's recurring defect, so a disagreement stops the load here
+    // instead of producing a pack whose ids say one date and whose layer metadata says another.
+    const curated = vintagesFor(country, generation, "places_osm");
+    const locality = curated.LOC || null;
+    if (locality && locality.vintage && locality.vintage !== vintage) {
+      throw new Error(
+        `vintages.js pins ${country}/${generation} places_osm to the ${locality.vintage} extract `
+        + `and this one is ${vintage}. Either the wrong extract is pinned in PLACES_PBF_URL or `
+        + "vintages.js has not been updated for a new one. Do not load a pack whose layer "
+        + "metadata disagrees with the vintage inside every one of its ids.",
+      );
+    }
+    // A country with no curated entry still gets its read vintage published, with nothing
+    // asserted about supersession. An absent entry means nobody has written the facts down yet,
+    // which must not also mean the endpoint goes blank -- that is the bug being fixed here.
+    const vintages = {
+      LOC: {
+        vintage,
+        vintage_source: locality
+          ? locality.vintage_source
+          : "read: osmosis_replication_timestamp in the extract header",
+        superseded_by: locality ? locality.superseded_by || null : null,
+        superseded_from: locality ? locality.superseded_from || null : null,
+        supersession_note: locality ? locality.note || null : null,
+      },
+    };
     await recordSource(client, country, generation, "places_osm", {
-      source: "OpenStreetMap contributors",
-      license: "ODbL 1.0",
-      url: "https://www.openstreetmap.org/copyright",
+      vintages,
+      // These three repeat the credit's own fields for a person reading pack_meta directly, and
+      // `license` said "ODbL 1.0" here while `attribution.license` below said
+      // "Open Database License (ODbL) 1.0" -- a fifth copy of the string whose four others were
+      // reconciled on 29 October 2026. Not served, so nothing broke; a provenance record that
+      // contradicts the credit beside it is still a record nobody can cite.
+      source: OSM_ODBL.source,
+      license: OSM_ODBL.license,
+      url: OSM_ODBL.url,
       extract: PBF_URL,
       sha256: digest,
       osm_replication_timestamp: replication,
