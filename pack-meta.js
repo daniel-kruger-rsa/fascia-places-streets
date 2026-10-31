@@ -45,12 +45,27 @@ function assertVintageSource(country, generation, key, value) {
   }
 }
 
-// The same guard, for a patch aimed at a path inside a layer rather than at the layer. A write to
-// ['polygons_adm','vintages','ADM4'] IS a vintage object, so the shape above would look at its
-// absent `vintages` key and pass everything.
+// The same guard, for a patch aimed at a path inside a layer rather than at the layer. Three shapes
+// reach here and each puts the vintage object somewhere different, which is the whole reason this
+// function exists rather than one regex at the top:
+//
+//   [layer]                      the patch is a layer value; the vintages hang off `.vintages`
+//   [layer, "vintages"]          the patch IS the vintages map, keyed by adm level
+//   [layer, "vintages", "ADM4"]  the patch IS one vintage object
+//
+// THE MIDDLE ONE WAS MISSING and would have passed anything. It is not hypothetical: it is the
+// shape ingest-mdb-wards.js was changed to on 31 October 2026, so the ward layer's vintage_source
+// would have gone unchecked through the second path in two days -- the same bypass this guard was
+// written to close, one shape along. scripts/test-pack-meta.js now asserts all three.
 function assertVintagePatch(country, generation, pathArr, patch) {
   if (pathArr.length >= 3 && pathArr[1] === "vintages") {
     assertOneVintage(country, generation, pathArr[0], pathArr[2], patch);
+    return;
+  }
+  if (pathArr.length === 2 && pathArr[1] === "vintages") {
+    for (const [adm, info] of Object.entries(patch || {})) {
+      assertOneVintage(country, generation, pathArr[0], adm, info);
+    }
     return;
   }
   assertVintageSource(country, generation, pathArr[0], patch);
@@ -104,4 +119,4 @@ async function mergeSource(client, country, generation, path, patch) {
   return rowCount;
 }
 
-module.exports = { recordSource, mergeSource, assertVintageSource };
+module.exports = { recordSource, mergeSource, assertVintageSource, assertVintagePatch };
