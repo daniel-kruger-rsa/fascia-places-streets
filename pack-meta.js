@@ -16,21 +16,44 @@
 // convention is the same failure this repository has found five times in a week, so it is held
 // here instead -- at the one place every provenance write passes through -- and an ingest that
 // would record an unbranchable string fails rather than publishing one.
+//
+// AND THAT CLAIM WAS FALSE WHEN IT WAS WRITTEN. "The one place every provenance write passes
+// through" described recordSource() while two other writers existed: record-pack-facts.js carried
+// its own copy of the merge SQL, and ingest-mdb-wards.js a third, built with raw jsonb_set and not
+// requiring this module at all. The ward ingest is the one due to run on 4 November 2026, and the
+// vintage_source it writes for the new ward layer went through the only path the guard could not
+// see. Found on 31 October 2026 by reading the ingest that was about to run. Both writers now come
+// through mergeSource() below, which is what makes the sentence above true.
 const VINTAGE_SOURCE_WORD = /^(read|asserted)\b/;
+
+function assertOneVintage(country, generation, key, adm, info) {
+  if (!info || typeof info !== "object") return;
+  const src = info.vintage_source;
+  if (src === undefined || src === null) return;
+  if (typeof src !== "string" || !VINTAGE_SOURCE_WORD.test(src.trim())) {
+    throw new Error(
+      `${country}/${generation} ${key} ${adm}: vintage_source must begin with the word "read" `
+      + `or "asserted" -- a host is told to branch on it. Got ${JSON.stringify(src)}`,
+    );
+  }
+}
 
 function assertVintageSource(country, generation, key, value) {
   const vintages = (value && value.vintages) || {};
   for (const [adm, info] of Object.entries(vintages)) {
-    if (!info || typeof info !== "object") continue;
-    const src = info.vintage_source;
-    if (src === undefined || src === null) continue;
-    if (typeof src !== "string" || !VINTAGE_SOURCE_WORD.test(src.trim())) {
-      throw new Error(
-        `${country}/${generation} ${key} ${adm}: vintage_source must begin with the word "read" `
-        + `or "asserted" -- a host is told to branch on it. Got ${JSON.stringify(src)}`,
-      );
-    }
+    assertOneVintage(country, generation, key, adm, info);
   }
+}
+
+// The same guard, for a patch aimed at a path inside a layer rather than at the layer. A write to
+// ['polygons_adm','vintages','ADM4'] IS a vintage object, so the shape above would look at its
+// absent `vintages` key and pass everything.
+function assertVintagePatch(country, generation, pathArr, patch) {
+  if (pathArr.length >= 3 && pathArr[1] === "vintages") {
+    assertOneVintage(country, generation, pathArr[0], pathArr[2], patch);
+    return;
+  }
+  assertVintageSource(country, generation, pathArr[0], patch);
 }
 
 async function recordSource(client, country, generation, key, value) {
@@ -46,4 +69,39 @@ async function recordSource(client, country, generation, key, value) {
   );
 }
 
-module.exports = { recordSource, assertVintageSource };
+// A MERGE INTO PART OF A LAYER, which is the other way provenance gets written.
+//
+// recordSource() replaces a layer's whole value, which is right for the ingest that owns the
+// layer: it holds the source hashes, the unit counts and the corrections report, and a rerun
+// should rewrite all of them. This one adds or changes keys underneath, for the two cases where
+// the writer does not own everything it is touching:
+//
+//   a credit that arrived after the data        record-pack-facts.js, whole layer
+//   one adm level inside a shared layer         ingest-mdb-wards.js owns ADM4 of polygons_adm
+//                                               and must leave ADM1-ADM3 alone
+//
+// `path` is the full key path under `sources`, so a deep write stays deep: jsonb's `||` is a
+// SHALLOW merge, and merging {vintages: {ADM4: …}} at the layer would replace the whole vintages
+// object and silently drop the other three levels' years.
+//
+// RETURNS THE ROW COUNT, and callers must look at it. The ward ingest's own UPDATE discarded it,
+// so a (country, generation) pair matching no pack_meta row wrote nothing, recorded no vintage and
+// still printed `ok: true` -- a layer loaded and labelled as the vintage it replaced.
+async function mergeSource(client, country, generation, path, patch) {
+  const c = String(country || "ZA").toUpperCase();
+  const pathArr = Array.isArray(path) ? path : [path];
+  assertVintagePatch(c, generation, pathArr, patch);
+  const { rowCount } = await client.query(
+    `UPDATE pack_meta
+        SET sources = jsonb_set(
+              sources,
+              $3::text[],
+              COALESCE(sources #> $3::text[], '{}'::jsonb) || $4::jsonb,
+              true)
+      WHERE country = $1 AND generation = $2`,
+    [c, generation, pathArr, JSON.stringify(patch)],
+  );
+  return rowCount;
+}
+
+module.exports = { recordSource, mergeSource, assertVintageSource };

@@ -108,9 +108,90 @@ const OSM_ODBL = {
   license: "Open Database License (ODbL) 1.0",
 };
 
+// Municipal Demarcation Board -- the ADM1-ADM4 polygons, every vintage and both routes.
+//
+// WE TOLD THE CUSTODIAN WE DO THIS, IN WRITING, AND WE DID NOT. The letter sent to the MDB on
+// 21 October 2026 says: "We credit the Municipal Demarcation Board as the source wherever those
+// boundaries are used." Measured against production on 31 October 2026, no response that carries
+// those boundaries credited them, and `GET /v1/places/generation` -- which docs/API.md calls "the
+// whole display duty for that country and generation" -- named three rights holders of five.
+// `GET /v1/places/geojson?kind=ward` returned MDB ward polygons under a credit to Statistics
+// South Africa and OpenStreetMap, neither of whom supplied a cell in it.
+//
+// The cause is the same one found twice on 29 October 2026 and fixed twice without being swept:
+// ingest-mdb.js recorded `polygons_adm` with a `license` and no `attribution_required`, so
+// packFacts() skipped it. Survey of India and the OSM locality tier were the two layers somebody
+// happened to be looking at; this is the oldest layer in the pack and nobody looked. Held now by
+// scripts/check-pack-credits.js, which fails the build on a licensed layer that reaches no
+// response -- the class rather than the instance.
+//
+// AN ACKNOWLEDGEMENT OF SOURCE, NOT AN ASSERTION OF COPYRIGHT. MDB demarcates municipal and ward
+// boundaries; a provincial boundary is constitutional and not theirs to demarcate. "(c) Municipal
+// Demarcation Board" across ADM1 would claim for them something they do not claim, so `text`
+// credits them as the source of the layer, which is both true of all four levels and the wording
+// the letter used.
+//
+// NO `statement`. The MDB prescribed no form of words -- their answer of 22 October 2026 was that
+// the data is self-service, no licence and no fee. Writing a sentence here and serving it in
+// `statement` would tell a host the MDB approved wording they have never seen. Same reasoning as
+// the Survey of India constant above.
+const MDB_DEMARCATION = {
+  source: "Municipal Demarcation Board",
+  text: "Administrative boundaries: Municipal Demarcation Board, South Africa",
+  url: "https://www.demarcation.org.za/",
+  license: "MDB open data; attribute the Municipal Demarcation Board",
+};
+
+// geoBoundaries -- the route the ADM1-ADM4 polygons reach us by, and a second rights holder on
+// one layer.
+//
+// `polygons_adm` is a two-party layer: the MDB demarcated the boundaries and geoBoundaries
+// publishes the copy we actually ingested, under CC BY 3.0 IGO, by way of OCHA ROSEA. CC BY
+// requires crediting the licensor, so representing only one of the two would be choosing which
+// obligation to break. That is why packFacts() now accepts a LIST of credits for one layer: the
+// provenance shape allowed exactly one per layer, which quietly made a two-party chain
+// unrepresentable and is part of why this went unnoticed.
+//
+// THE 2026 WARD LAYER LEAVES THIS CHAIN. From 4 November 2026 the wards come straight from MDB's
+// own portal, so geoBoundaries is the publisher of ADM1-ADM3 only and `polygons_ward_mdb` carries
+// the MDB credit alone. mergeCredits() unions the layer lists, so the MDB appears once naming both
+// layers and geoBoundaries once naming one.
+//
+// NO `statement`, AND THE CITATION FORM IS NOT SETTLED. geoBoundaries asks to be cited in a
+// particular academic form which we have not confirmed with them. Crediting them by name under the
+// licence they release is defensible and is strictly better than the nothing that was served
+// before; the exact form is a letter, as it was for Stats SA, Survey of India and the MDB. Recorded
+// as an open item in packs/SOURCES.md rather than guessed at here.
+const GEOBOUNDARIES_GBOPEN = {
+  source: "geoBoundaries",
+  text: "Boundaries via geoBoundaries (gbOpen), after OCHA ROSEA",
+  url: "https://www.geoboundaries.org/",
+  license: "CC BY 3.0 IGO",
+};
+
+// GeoNames -- the `points_geonames` layer, CC BY 4.0, credited nowhere until 31 October 2026.
+//
+// The second layer the sweep found. ingest-geonames.js recorded `license: "CC BY 4.0"` and no
+// credit, and `GET /v1/places/geonames` carries no `attribution` field at all -- not an empty one,
+// none -- so a host rendering GeoNames dots had nothing to show even if it looked. The populated
+// places are labels rather than harvest cells, which is probably why nobody looked; a licence
+// condition does not weaken with the importance of the layer.
+//
+// `© GeoNames` is the short form GeoNames' own pages use, with the link the licence asks for. No
+// `statement`: they prescribe none.
+const GEONAMES_CCBY = {
+  source: "GeoNames",
+  text: "© GeoNames",
+  url: "https://www.geonames.org/",
+  license: "CC BY 4.0",
+};
+
 module.exports = {
   STATS_SA_CENSUS_2011,
   STATS_SA_CENSUS_2022,
   SURVEY_OF_INDIA_ABDB,
   OSM_ODBL,
+  MDB_DEMARCATION,
+  GEOBOUNDARIES_GBOPEN,
+  GEONAMES_CCBY,
 };
