@@ -114,7 +114,7 @@ const OSM_ODBL = {
 // 21 October 2026 says: "We credit the Municipal Demarcation Board as the source wherever those
 // boundaries are used." Measured against production on 31 October 2026, no response that carries
 // those boundaries credited them, and `GET /v1/places/generation` -- which docs/API.md calls "the
-// whole display duty for that country and generation" -- named three rights holders of five.
+// whole display duty for that country and generation" -- named three rights holders of six.
 // `GET /v1/places/geojson?kind=ward` returned MDB ward polygons under a credit to Statistics
 // South Africa and OpenStreetMap, neither of whom supplied a cell in it.
 //
