@@ -199,7 +199,84 @@ const GEONAMES_ZA_260921 = {
   },
 };
 
+// INDIA. The Survey of India Administrative Boundary Database, and the one vintage this file was
+// missing for a whole country until 4 November 2026. `/v1/places/layers?country=IN` returned all
+// ten levels with no vintage on any of them, because `packVintages` reads
+// `sources[<layer>].vintages[<adm>]` and the India pack recorded none -- so the endpoint said
+// nothing about what 79,082 Indian cells are of, and when the corrected ABDB arrives there would
+// have been nothing for it to supersede. The same defect shape as the ZA locality tier on
+// 29 October, one country wider.
+//
+// READ, not asserted, and the evidence is the custodian's own: SOI ship an ISO 19115 record in
+// `Metadata_ABDB.zip` which identifies every level as `SOI/ABDB/VECTOR/50000/2025/<LEVEL>/INDIA`
+// under series name ABDB, temporal extent 2022-2025, published May 2026. The year is in the
+// identifier they assign, so it is read from the source rather than inferred from a filename.
+const SOI_ABDB_2025 = {
+  vintage: "2025",
+  vintage_source:
+    "read: series ABDB, identifier SOI/ABDB/VECTOR/50000/2025/<LEVEL>/INDIA in Survey of "
+    + "India's ISO 19115 metadata (Metadata_ABDB.zip), temporal extent 2022-2025, published "
+    + "May 2026",
+  // SOI'S OWN WORDS, from their reply of 4 November 2026: "updation of administrative boundary
+  // upto village level on our website is a continuous exercise. For any minute to major changes
+  // will be published in our latest version. So it is requested kindly to download the data &
+  // explore after every 3-6 months gaps." So a newer release always exists in principle, exactly
+  // as for an OpenStreetMap extract, and for the same reason it carries no date.
+  superseded_by: "a newer ABDB release, which Survey of India publishes continuously",
+  // NO superseded_from, and this is the distinction MDB_2020 exists to make. An Indian
+  // administrative boundary is a thing in force, but SOI proclaim no effective date and publish
+  // continuously, so there is no morning on which these boundaries stop describing what is in
+  // force. Naming one would put a false date in front of a host; the ward layer gets a date
+  // because a delimitation proclaimed one.
+  superseded_from: null,
+  note:
+    "Survey of India asked us on 4 November 2026 to re-download every 3-6 months, because "
+    + "boundary updating to village level is continuous there. Our copy is pinned at "
+    + "16 October 2026, so the first refresh falls due between January and April 2027. This "
+    + "pack is also one slice rather than the country: 1 state, 36 districts, 359 sub-districts "
+    + "and 44,262 villages, which is Maharashtra. A level reading 2025 here is a claim about the "
+    + "slice we hold and not about India.",
+  source: "https://onlinemaps.surveyofindia.gov.in/",
+};
+
+// India's localities, from the same Geofabrik extract the pack was built against. Recorded here
+// on 4 November 2026 for a reason worth keeping: ingest-osm-places.js has published a LOC vintage
+// since 29 October even with no curated entry, and India's locality load ran at 07:57 that
+// morning -- before the fix landed. So the pack carries the extract date as a loose `vintage` key
+// that a person reading pack_meta can see and the endpoint cannot. Nothing is wrong with the
+// ingest; the pack is simply older than the fix, and record-pack-facts.js can repair it without
+// touching 34,424 rows.
+const OSM_PLACES_IN_260101 = {
+  LOC: {
+    vintage: "2026-01-01",
+    vintage_source:
+      "read: osmosis_replication_timestamp in the header of western-zone-260101.osm.pbf, "
+      + "cross-checked against this entry by ingest-osm-places.js",
+    superseded_by: "a newer OpenStreetMap extract, which exists continuously",
+    superseded_from: null,
+    note:
+      "Same reasoning as the South African locality layer: OpenStreetMap is edited daily, so a "
+      + "newer extract always exists and nothing proclaims a locality. The id seed contains the "
+      + "vintage, so a new extract means new ids and a crosswalk rather than an update in place.",
+  },
+};
+
 const SUPERSESSIONS = {
+  IN: {
+    "in-abdb-2025": {
+      // One curated object applied to the four levels the ABDB actually fills. ADM4, MP, GN and
+      // ST are deliberately absent: this pack holds no cell at those levels, and a vintage is a
+      // claim about data held here. Writing one for an empty level would be the mirror of the
+      // defect being fixed -- a level that reads as present because its metadata does.
+      polygons_soi_abdb: {
+        ADM1: { ...SOI_ABDB_2025 },
+        ADM2: { ...SOI_ABDB_2025 },
+        ADM3: { ...SOI_ABDB_2025 },
+        SP: { ...SOI_ABDB_2025 },
+      },
+      places_osm: OSM_PLACES_IN_260101,
+    },
+  },
   ZA: {
     "mdb-zaf-2020": {
       polygons_adm: MDB_2020,
@@ -248,4 +325,38 @@ function vintagesFor(country, generation, layerKey) {
   return ((byGen[generation] || {})[layerKey]) || {};
 }
 
-module.exports = { SUPERSESSIONS, supersessionFor, vintagesFor };
+// THE SHAPE pack_meta STORES, built in one place. This was `buildVintages()` inside
+// record-pack-facts.js until 4 November 2026, when ingest-soi.js needed the same object for a
+// fresh load -- and a second copy of a shape is how `source` came to be spelt two ways in the
+// OpenStreetMap credit, and how the `vintage_source` guard came to sit in front of one writer
+// while two others went round it. The curated entries above use `note` and `source` because they
+// are written for a person editing this file; what pack_meta holds is `supersession_note` and
+// `supersession_source`, because a reader of the pack needs to know which of several notes it is.
+// One translation, here, rather than one per caller.
+//
+// THROWS rather than returning something incomplete. A level with no `vintage` or no
+// `vintage_source` is the defect this whole mechanism exists to stop: an omitted vintage reads as
+// "this layer has none", which is a different and false statement from "nobody wrote it down".
+function packVintagesFor(country, generation, layerKey) {
+  const curated = vintagesFor(country, generation, layerKey);
+  const out = {};
+  for (const [adm, info] of Object.entries(curated)) {
+    if (!info || !info.vintage || !info.vintage_source) {
+      throw new Error(
+        `${country}/${generation} ${layerKey}/${adm} has no vintage or no vintage_source in `
+        + "vintages.js. A vintage with no provenance is the thing this mechanism exists to stop.",
+      );
+    }
+    out[adm] = {
+      vintage: info.vintage,
+      vintage_source: info.vintage_source,
+      superseded_by: info.superseded_by || null,
+      superseded_from: info.superseded_from || null,
+      supersession_note: info.note || null,
+      ...(info.source ? { supersession_source: info.source } : {}),
+    };
+  }
+  return out;
+}
+
+module.exports = { SUPERSESSIONS, supersessionFor, vintagesFor, packVintagesFor };
